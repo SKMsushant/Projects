@@ -11,3 +11,4 @@ data_analytics/logs
 
 *.csv
 *.xlsx
+.env
