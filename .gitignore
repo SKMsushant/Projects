@@ -1,0 +1,13 @@
+proj_env/
+logs/
+data_analysis/
+data_analytics/logs
+**/logs/
+*.logs
+
+**/__pycache__/
+*.pyc
+
+
+*.csv
+*.xlsx
