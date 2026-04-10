@@ -197,9 +197,12 @@ def feature_engineer():
     df_master=data_cleaning()
     df_master['session_type']=pd.cut(df_master['session_duration_sec'],bins=[0,10,60,float(np.inf)],labels=['Bouncer','Browser','Engaged'])
 
-    df_master['day_num']=df_master[df_master['transaction_date']!=pd.Timestamp('1900-01-01')]['transaction_date'].dt.day_of_week
-    df_master.loc[df_master['day_num'].isna(),'day_num']=-1
-    df_master['is_weekend']=df_master['day_num'].apply(lambda x:int(True) if x in [5,6]  else (-1 if x in [-1] else int(False)))
+    df_master['event_day_num']=df_master['event_date'].dt.day_of_week
+    df_master['event_is_weekend']=df_master['event_day_num'].isin([5,6]).astype(int)
+
+    df_master['trans_day_num']=df_master[df_master['transaction_date']!=pd.Timestamp('1900-01-01')]['transaction_date'].dt.day_of_week
+    df_master.loc[df_master['trans_day_num'].isna(),'trans_day_num']=-1
+    df_master['trans_is_weekend']=df_master['trans_day_num'].apply(lambda x:int(True) if x in [5,6]  else (-1 if x in [-1] else int(False)))
 
     df_master=cust_value_scoring(df_master)
 
