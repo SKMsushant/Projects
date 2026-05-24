@@ -1,4 +1,4 @@
-# Antigravity AlgoTrade GRU ⚡
+# AlgoTrade GRU ⚡
 
 A high-performance algorithmic trading dashboard featuring a pre-trained generalized GRU recurrent neural network and dynamic on-the-fly transfer learning. The app supports equities and indices from the Indian National Stock Exchange (NSE) and US NASDAQ.
 
