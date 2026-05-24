@@ -199,6 +199,7 @@ def feature_engineer():
 
     df_master['event_day_num']=df_master['event_date'].dt.day_of_week
     df_master['event_is_weekend']=df_master['event_day_num'].isin([5,6]).astype(int)
+    df_master['age_group']=pd.cut(df_master['age'],bins=[0,14,24,64,float(np.inf)],labels=['child','youth','adults','senior'])
 
     df_master['trans_day_num']=df_master[df_master['transaction_date']!=pd.Timestamp('1900-01-01')]['transaction_date'].dt.day_of_week
     df_master.loc[df_master['trans_day_num'].isna(),'trans_day_num']=-1

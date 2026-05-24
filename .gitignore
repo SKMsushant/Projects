@@ -12,3 +12,5 @@ data_analytics/logs
 *.csv
 *.xlsx
 .env
+__pycache__
+reports
