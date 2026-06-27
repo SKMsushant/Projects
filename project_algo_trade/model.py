@@ -1,240 +1,220 @@
+import os
+import datetime
 import numpy as np
 import tensorflow as tf
 import keras_tuner as kt
 from tensorflow.keras.models import Sequential,load_model
-from tensorflow.keras.layers import GRU, Dense, Dropout, LayerNormalization,Input
-from tensorflow.keras.regularizers import l2
+from tensorflow.keras.layers import MultiHeadAttention, Dense, Dropout, LayerNormalization,Input,GlobalAveragePooling1D
 from tensorflow.keras.optimizers import Adam, AdamW, RMSprop
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import GRU, Dense, Dropout, LayerNormalization, Input
-from tensorflow.keras.regularizers import l2
-
-def build_stateful_gru(seq_length, num_features, batch_size=1, learning_rate=0.001, l2_reg=1e-4, dropout_rate=0.2):
-    """
-    Builds the exact same Stateful Deep GRU architecture used in application serving.
-    """
-    model = Sequential([
-        Input(batch_shape=(batch_size, seq_length, num_features)),
-        GRU(
-            units=128,
-            return_sequences=True,
-            stateful=True,
-            kernel_regularizer=l2(l2_reg),
-            recurrent_regularizer=l2(l2_reg)
-        ),
-        LayerNormalization(),
-        Dropout(dropout_rate),
-        GRU(
-            units=64,
-            return_sequences=True,
-            stateful=True,
-            kernel_regularizer=l2(l2_reg),
-            recurrent_regularizer=l2(l2_reg)
-        ),
-        LayerNormalization(),
-        Dropout(dropout_rate),
-        GRU(
-            units=32,
-            return_sequences=False,
-            stateful=True,
-            kernel_regularizer=l2(l2_reg),
-            recurrent_regularizer=l2(l2_reg)
-        ),
-        LayerNormalization(),
-        Dropout(dropout_rate),
-        Dense(
-            units=32,
-            activation='relu',
-            kernel_regularizer=l2(l2_reg)
-        ),
-        LayerNormalization(),
-        Dropout(dropout_rate),
-        Dense(
-            units=16,
-            activation='relu',
-            kernel_regularizer=l2(l2_reg)
-        ),
-        LayerNormalization(),
-        Dropout(dropout_rate),
-        Dense(
-            units=8,
-            activation='relu',
-            kernel_regularizer=l2(l2_reg)
-        ),
-        LayerNormalization(),
-        Dropout(dropout_rate),
-        Dense(units=1)
-    ])
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=1.0),
-        loss='mean_squared_error'
-    )
-    return model
+import json
 
 # =====================================================================
-# 1. Model Building
+# 1. Transformer Encoder Class
 # =====================================================================
-class StatefulGRUHyperModel(kt.HyperModel):
-    def __init__(self, seq_length, num_features, batch_size=1):
-        """
-        Stateful GRU HyperModel. Defines the parameterized search space.
-        """
-        self.seq_length = seq_length
-        self.num_features = num_features
-        self.batch_size = batch_size
 
-    def build(self, hp):
-        """
-        Builds and compiles the model dynamically based on HyperParameters (hp).
-        """
-        # --- Define Search Spaces ---
-        # 1. L2 Regularization (continuous log search from 1e-5 to 1e-3)
-        l2_reg = hp.Float('l2_reg', min_value=1e-5, max_value=1e-3, sampling='log')
-        
-        # 2. Dropout Rate (0.1 to 0.4 in steps of 0.1)
-        dropout_rate = hp.Float('dropout_rate', min_value=0.1, max_value=0.4, step=0.1)
-        
-        
-        # 4. Learning Rate (log search from 1e-4 to 1e-2)
-        lr = hp.Float('learning_rate', min_value=1e-4, max_value=1e-2, sampling='log')
+class Transformer_Encoder(tf.keras.layers.Layer):
 
-        model = Sequential([
-            # 1. Keras 3 standard: Explicit Input layer with batch_shape for stateful tracking
-            Input(batch_shape=(self.batch_size, self.seq_length, self.num_features)),
-            
-            # 2. GRU Layer 1 (Now clean of batch_input_shape!)
-            GRU(
-                units=128,
-                return_sequences=True,
-                stateful=True,
-                kernel_regularizer=l2(l2_reg),
-                recurrent_regularizer=l2(l2_reg)
-            ),
-            LayerNormalization(),
-            Dropout(dropout_rate),
-            
-            # GRU Layer 2
-            GRU(
-                units=64,
-                return_sequences=True,
-                stateful=True,
-                kernel_regularizer=l2(l2_reg),
-                recurrent_regularizer=l2(l2_reg)
-            ),
-            LayerNormalization(),
-            Dropout(dropout_rate),
-            
-            # GRU Layer 3
-            GRU(
-                units=32,
-                return_sequences=False,
-                stateful=True,
-                kernel_regularizer=l2(l2_reg),
-                recurrent_regularizer=l2(l2_reg)
-            ),
-            LayerNormalization(),
-            Dropout(dropout_rate),
-            
-            # --- Dense Stack (4 Dense Layers) ---
-            Dense(
-                units=32,
-                activation='relu',
-                kernel_regularizer=l2(l2_reg)
-            ),
-            LayerNormalization(),
-            Dropout(dropout_rate),
-            
-            Dense(
-                units=16,
-                activation='relu',
-                kernel_regularizer=l2(l2_reg)
-            ),
-            LayerNormalization(),
-            Dropout(dropout_rate),
-            
-            Dense(
-                units=8,
-                activation='relu',
-                kernel_regularizer=l2(l2_reg)
-            ),
-            LayerNormalization(),
-            Dropout(dropout_rate),
-            
-            Dense(units=1)
+    def __init__(self,num_heads,d_model,ff_dim,dropout=0.1,kernel_regularizer=None,**kwargs):
+        super().__init__(**kwargs)
+
+        self.mha=tf.keras.layers.MultiHeadAttention(num_heads=num_heads,key_dim=d_model,value_dim=d_model)
+        self.ffn=tf.keras.Sequential([
+            tf.keras.layers.Dense(ff_dim,activation='relu',kernel_regularizer=kernel_regularizer),
+            tf.keras.layers.Dense(d_model,kernel_regularizer=kernel_regularizer)
         ])
-        
-        # --- Compiler with Gradient Clipping ---
-            
-        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr,clipnorm=1.0), loss='mean_squared_error',metrics=['mean_squared_error'])
-        return model
+        self.layernorm_mha=tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.layernorm_ffn=tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.dropout_mha=tf.keras.layers.Dropout(dropout)
+        self.dropout_ffn=tf.keras.layers.Dropout(dropout)
+
+
+    def call(self,x,training=False):
+        #Multi-Head Attention and residual connection
+        attn_output=self.mha(x,x,x,training=training)
+        attn_output=self.dropout_mha(attn_output,training=training)
+        out1=self.layernorm_mha(x+attn_output)
+
+        #Feed Forward network and residual connection
+        ffn_output=self.ffn(out1,training=training)
+        ffn_output=self.dropout_ffn(ffn_output,training=training)
+        return self.layernorm_ffn(out1+ffn_output)
+    
 
 # =====================================================================
-# 3. Custom Tuner Class
+# 2. Positional Embedding Class
+# =====================================================================
+    
+class Static_Positional_Embedding(tf.keras.layers.Layer):
+    def __init__(self,seq_len,d_model,**kwargs):
+        super().__init__(**kwargs)
+        self.seq_len=seq_len
+        self.d_model=d_model
+
+
+        sentence_positional_vector_list=[]
+
+        for word_position in range(self.seq_len):
+
+            word_position_vector=[]
+            for i in range(int((self.d_model/2))):
+                y_sin=np.sin(word_position/10000**((2*i)/self.d_model))
+                y_cos=np.cos(word_position/10000**((2*i)/self.d_model))
+                word_position_vector.append(y_sin)
+                word_position_vector.append(y_cos)
+
+            if len(word_position_vector)<self.d_model:
+                word_position_vector.append(np.sin(word_position/10000**((self.d_model-1)/self.d_model)))
+
+            sentence_positional_vector_list.append(word_position_vector)
+
+        encoding_matrix= np.array(sentence_positional_vector_list)
+        self.positional_encoding=tf.constant(encoding_matrix,dtype=tf.float32)[None,...]
+
+    def call(self,x):
+        return x+self.positional_encoding
+
+# =====================================================================
+# 3. Model Builder Class
 # =====================================================================
 
-class StatefulChronologicalTuner(kt.Tuner):
-    def run_trial(self, trial, train_sequences, val_sequences, epochs=3, batch_size=1):
-        """
-        Custom trial execution to run our symbol-by-symbol stateful training loop.
-        Reports validation loss to the oracle for hyperparameter optimization!
-        """
-        # 1. Build the model for this trial config
-        model = self.hypermodel.build(trial.hyperparameters)
-        
-        # 2. Run Stateful chronological training
-        for epoch in range(epochs):
-            # Train per symbol
-            for symbol, (X_train, y_train) in train_sequences.items():
-                if len(X_train) == 0:
-                    continue
-                for layer in model.layers:
-                    if hasattr(layer, 'reset_states'):
-                        layer.reset_states()
-                model.fit(
-                    X_train, y_train,
-                    epochs=1,
-                    batch_size=batch_size,
-                    shuffle=False,
-                    verbose=0
-                )
-                
-        # 3. Evaluate on validation sequences per symbol
-        val_losses = []
-        for symbol, (X_val, y_val) in val_sequences.items():
-            if len(X_val) == 0:
-                continue
-            for layer in model.layers:
-                if hasattr(layer, 'reset_states'):
-                    layer.reset_states()
-            val_loss = model.evaluate(
-                X_val, y_val,
-                batch_size=batch_size,
-                verbose=0
+class Transformer_Encoder_Model(kt.HyperModel):
+    def __init__(self,seq_len,num_features,num_heads=4,ff_dim=256,dropout_rate=0.2):
+        super().__init__()
+        self.seq_len=seq_len
+        self.num_features=num_features
+        self.num_heads=num_heads
+        self.ff_dim=ff_dim
+        self.dropout_rate=dropout_rate
+        self.model=None
+
+    #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def build(self,hp):
+        #=======================================================
+
+        reg_type=hp.Choice('reg_type',['l1','l2','l1_l2','None'])
+        if reg_type=='l1':
+            reg=tf.keras.regularizers.L1(
+                l1=hp.Float('l1',min_value=1e-8,max_value=1e-3,sampling='log')
             )
-            val_losses.append(val_loss)
-            
-        mean_val_loss = np.mean(val_losses)
+        elif reg_type=='l2':
+            reg=tf.keras.regularizers.L2(
+                l2=hp.Float('l2',min_value=1e-8,max_value=1e-3,sampling='log')
+            )
+        elif reg_type=='l1_l2':
+            reg=tf.keras.regularizers.L1L2(
+                l1=hp.Float('l1',min_value=1e-8,max_value=1e-3,sampling='log'),
+                l2=hp.Float('l2',min_value=1e-8,max_value=1e-3,sampling='log')
+            )
+        else:
+            reg=None
+
+        #=============================================================    
+
+
+
+        inputs=tf.keras.layers.Input(shape=(self.seq_len,self.num_features))
+
+        pos_encoding=Static_Positional_Embedding(seq_len=self.seq_len,d_model=self.num_features)(inputs)
+
+        transformer_block=Transformer_Encoder(
+            num_heads=self.num_heads,
+            d_model=self.num_features,
+            ff_dim=self.ff_dim,
+            dropout=hp.Float('dropout_rate',min_value=0.1,max_value=0.4,step=0.1)
+        )
+
+        x=transformer_block(pos_encoding)
+
+        x=GlobalAveragePooling1D()(x)
+        x=Dropout(self.dropout_rate)(x)
+        x=Dense(32,activation='relu',kernel_regularizer=reg)(x)
+        outputs=Dense(1)(x)
+
+        self.model=tf.keras.Model(inputs=inputs,outputs=outputs,name='Transformer_Stock_Predictor')
+        lr=hp.Float('Learning_Rate',min_value=1e-4,max_value=1e-2,sampling='log')
+        self.model.compile(
+            optimizer=AdamW(learning_rate=lr),
+            loss=tf.keras.losses.MeanSquaredError(),
+            metrics=[tf.keras.metrics.R2Score(name='r2_score')]
+        )
+
+        return self.model
+    
+    #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+    
+    def fit(self,hp,model,x,y,validation_data,*args,**kwargs):
+
+
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        model_save_path=os.path.join(project_dir,r'\predicting_models')
+        if not os.path.exists(model_save_path):
+            os.makedirs(model_save_path,exist_ok=True)
         
-        # 4. Report the objective metric (mean validation loss) to the tuner oracle
-        self.oracle.update_trial(trial.trial_id, {"val_loss": mean_val_loss})
-        self.save_model(trial.trial_id, model)
-    # =================================================================
-    # ✅ ADDED: Implement save_model for Keras Tuner Base compatibility
-    # =================================================================
-    def save_model(self, trial_id, model, step=0):
-        import os
-        # Ensure project folder exists
-        os.makedirs(self.project_dir, exist_ok=True)
-        # Create standard filepath
-        filepath = os.path.join(self.project_dir, f"trial_{trial_id}")
-        model.save(f"{filepath}.keras")
-    # =================================================================
-    # ✅ ADDED: Implement load_model for Keras Tuner Base compatibility
-    # =================================================================
-    def load_model(self, trial):
-        import os
-        filepath = os.path.join(self.project_dir, f"trial_{trial.trial_id}")
-        return load_model(f"{filepath}.keras")
+        now=datetime.datetime.now()
+        timestamp=now.strftime('[%Y_%m_%d_%H_%M_%S]')
+
+
+        model_checkpoint=tf.keras.callbacks.ModelCheckpoint(
+            filepath=os.path.join(model_save_path,f"{timestamp}_best_hypertransformer_weights.weights.h5"),
+            monitor='val_loss',
+            verbose=1,
+            save_best_only=True,
+            save_weights_only=True,
+            mode='min',
+            save_freq='epoch'
+        )
+
+        early_stopping=tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            min_delta=1e-5,
+            patience=10,
+            verbose=1,
+            mode='min',
+            restore_best_weights=True
+        )
+
+        reduce_lr=tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.2,
+            patience=3,
+            min_lr=1e-6,
+            verbose=1
+        )
+
+        callbacks=kwargs.pop('callbacks',[])
+        callbacks.append(model_checkpoint)
+        callbacks.append(early_stopping)
+        callbacks.append(reduce_lr)
+
+
+        x_val, y_val = validation_data
+        epochs=hp.Int('epochs',min_value=10,max_value=30,step=5)
+        batch_size=hp.Int('Batch_size',min_value=16,max_value=64,step=8)
+        return model.fit(
+            x=x,
+            y=y,
+            epochs=epochs,
+            validation_data=(x_val, y_val),
+            callbacks=callbacks,
+            batch_size=batch_size,
+            verbose='auto',
+            **kwargs
+        )
+    #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def predict(self, X, batch_size=32, verbose=0):
+        
+        if self.model is None:
+            raise ValueError("Model must be built before making predictions.")
+        return self.model.predict(X, batch_size=batch_size, verbose=verbose)
+        
+    def save(self, filepath):
+       
+        if self.model is None:
+            raise ValueError("Model must be built before saving.")
+        self.model.save(filepath)
+
+
     
     
 
@@ -250,13 +230,13 @@ if __name__ == "__main__":
     from preprocessing_data import StatefulDataPreprocessor
     
     print("\n" + "="*50)
-    print("📈 ALGORITHMIC TRADING SYSTEM - TRAINING PIPELINE 📈")
+    print("TRANFORMER STOCK PREDICTOR - TRAINING PIPELINE ")
     print("="*50 + "\n")
     
     # -----------------------------------------------------------------
     # STEP 1: Ingest Raw Historical Data (2020 to 2025)
     # -----------------------------------------------------------------
-    print("⏳ Step 1: Collecting historical stock and index data (5-Year Window)...")
+    print(" Step 1: Collecting historical stock and index data (5-Year Window)...")
     company_data = {}
     
     for item in stock_tups:
@@ -271,20 +251,20 @@ if __name__ == "__main__":
         time.sleep(0.5) # Politeness delay to prevent rate limits
         
     unified_df = stack_company_data(company_data)
-    print(f"✅ Ingestion complete. Combined shape: {unified_df.shape}")
+    print(f" Ingestion complete. Combined shape: {unified_df.shape}")
     
     # -----------------------------------------------------------------
     # STEP 2: Add Technical Indicators
     # -----------------------------------------------------------------
-    print("\n⏳ Step 2: Calculating short and medium-term technical indicators...")
+    print("\n Step 2: Calculating short and medium-term technical indicators...")
     prep = Data_prep()
     df_prepared = prep.prepare_features(unified_df)
-    print(f"✅ Feature Engineering complete. Prepared shape: {df_prepared.shape}")
+    print(f" Feature Engineering complete. Prepared shape: {df_prepared.shape}")
     
     # -----------------------------------------------------------------
     # STEP 3: Advanced Preprocessing & Sequence Generation
     # -----------------------------------------------------------------
-    print("\n⏳ Step 3: Performing ordinal encoding, lifetime scaling, and sequence building...")
+    print("\n Step 3: Performing ordinal encoding, lifetime scaling, and sequence building...")
     # Use a sequence length of 10 days for memory-efficient stateful tracking
     preprocessor = StatefulDataPreprocessor(seq_length=10, target_col='close')
     sequences, df_scaled = preprocessor.fit_transform(df_prepared)
@@ -292,18 +272,26 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------
     # STEP 4: Chronological Train / Validation Split per Stock
     # -----------------------------------------------------------------
-    print("\n⏳ Step 4: Splitting sequences chronologically per stock (80% Train, 20% Val)...")
-    train_sequences = {}
-    val_sequences = {}
+    print("\n Step 4: Splitting sequences chronologically per stock (80% Train, 20% Val)...")
+    train_X_list, train_y_list = [], []
+    val_X_list, val_y_list = [], []
     
     for symbol, (X, y) in sequences.items():
         # Chronological boundary split (no shuffling to prevent leakage)
         split_idx = int(len(X) * 0.8)
         
-        train_sequences[symbol] = (X[:split_idx], y[:split_idx])
-        val_sequences[symbol] = (X[split_idx:], y[split_idx:])
+        train_X_list.append(X[:split_idx])
+        train_y_list.append(y[:split_idx])
+        val_X_list.append(X[split_idx:])
+        val_y_list.append(y[split_idx:])
         
-        print(f"   ▪ {symbol:<10} | Train samples: {len(X[:split_idx]):<5} | Val samples: {len(X[split_idx:]):<5}")
+        print(f" {symbol:<10} | Train samples: {len(X[:split_idx]):<5} | Val samples: {len(X[split_idx:]):<5}")
+
+    # Concatenate all tickers into global datasets
+    X_train_global = np.concatenate(train_X_list, axis=0)
+    y_train_global = np.concatenate(train_y_list, axis=0)
+    X_val_global = np.concatenate(val_X_list, axis=0)
+    y_val_global = np.concatenate(val_y_list, axis=0)
         
     # Dynamically extract sequence specs from our preprocessed tensors
     first_symbol = list(sequences.keys())[0]
@@ -311,51 +299,55 @@ if __name__ == "__main__":
     num_features = sample_X.shape[2]
     seq_length = sample_X.shape[1]
     
-    print(f"\n🔢 GRU Input Dimensions -> Timesteps (Days): {seq_length} | Features: {num_features}")
+    print(f"\n Input Dimensions -> Timesteps (Days): {seq_length} | Features: {num_features}")
     
     # -----------------------------------------------------------------
     # STEP 5: Initialize Keras Tuner with Bayesian Optimization
     # -----------------------------------------------------------------
-    print("\n⏳ Step 5: Initializing Keras Tuner (Bayesian Optimization)...")
-    hypermodel = StatefulGRUHyperModel(seq_length=seq_length, num_features=num_features, batch_size=1)
+    print("\n Step 5: Initializing Keras Tuner (Bayesian Optimization)...")
+    hypermodel = Transformer_Encoder_Model(seq_len=seq_length, num_features=num_features,)
     
-    tuner = StatefulChronologicalTuner(
-        oracle=kt.oracles.BayesianOptimizationOracle(
-            objective=kt.Objective("val_loss", direction="min"),
-            max_trials=5,  # We will test 5 optimized combinations
-            seed=42
-        ),
+    tuner = kt.BayesianOptimization(
         hypermodel=hypermodel,
+        objective=kt.Objective("val_loss", direction="min"),
+        max_trials=5,
+        executions_per_trial=1,
         directory="tuner_results",
-        project_name="algo_trade_stateful_gru"
+        project_name="algo_trade_transformer"
     )
     
     # -----------------------------------------------------------------
     # STEP 6: Execute Hyperparameter Search
     # -----------------------------------------------------------------
-    print("\n🚀 Step 6: Launching stateful hyperparameter optimization...")
+    print("\n Step 6: Launching stateful hyperparameter optimization...")
     tuner.search(
-        train_sequences=train_sequences,
-        val_sequences=val_sequences,
-        epochs=3, # Run 3 epochs per trial for rapid search evaluation
-        batch_size=1
-    )
+        x=X_train_global,
+        y=y_train_global,
+        validation_data=(X_val_global,y_val_global),
+        )
     
     # -----------------------------------------------------------------
     # STEP 7: Retrieve and Save Best Performing Model
     # -----------------------------------------------------------------
     print("\n" + "="*50)
-    print("🏆 PIPELINE RUN COMPLETE & CONVERGED!")
+    print(" PIPELINE RUN COMPLETE & CONVERGED!")
     print("="*50)
     
     best_model = tuner.get_best_models(num_models=1)[0]
     best_hp = tuner.get_best_hyperparameters(1)[0]
     
-    print("✨ Best Optimizer: ADAM (Static)")
-    print(f"✨ Best Learning Rate: {best_hp.get('learning_rate')}")
-    print(f"✨ Best L2 Weight Decay: {best_hp.get('l2_reg')}")
-    print(f"✨ Best Dropout Probability: {best_hp.get('dropout_rate')}")
+
+    print(f" Best Learning Rate: {best_hp.get('Learning_Rate')}")
+    print(f" Best Dropout Rate: {best_hp.get('dropout_rate')}")
+    print(f" Best Reg Type: {best_hp.get('reg_type')}")
     
-    # Save the best weights
-    best_model.save("best_stateful_gru.keras")
-    print("\n💾 Best model architecture and weights successfully saved to 'best_stateful_gru.keras'!")
+    best_hps_dict = best_hp.values
+    best_hps_filepath = "best_hps.json"
+    with open(best_hps_filepath, "w") as f:
+        json.dump(best_hps_dict, f, indent=4)
+    print(f" Best hyperparameters saved to '{best_hps_filepath}'")
+    
+    # Save the best model's weights to best_transformer_weights.h5
+    weights_filepath = "best_transformer_weights.weights.h5"
+    best_model.save_weights(weights_filepath)
+    print(f" Best weights successfully saved to '{weights_filepath}'!")

@@ -5,7 +5,6 @@ from sklearn.preprocessing import MinMaxScaler
 class StatefulDataPreprocessor:
     def __init__(self, seq_length=10, target_col='close'):
         """
-        Custom preprocessor designed specifically for a STATEFUL GRU.
         
         Args:
             seq_length (int): The sequence length (timesteps) per batch.
@@ -97,7 +96,6 @@ class StatefulDataPreprocessor:
 
     def create_stateful_sequences(self, df, feature_cols):
         """
-        CRITICAL FOR STATEFUL GRU:
         Generates sequences symbol-by-symbol chronologically.
         """
         symbol_sequences = {}
