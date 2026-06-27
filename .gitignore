@@ -1,0 +1,7 @@
+data_analytics/
+data_analysis/
+logs/
+proj_env/
+project_algo_trade/__pycache__/
+**__pycache__/
+project_algo_trade/.env
