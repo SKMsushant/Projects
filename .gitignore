@@ -5,3 +5,4 @@ proj_env/
 project_algo_trade/__pycache__/
 **__pycache__/
 project_algo_trade/.env
+project_algo_trade/run_app.bet
